@@ -103,6 +103,8 @@ void A_output(struct msg message)
 void A_input(struct pkt packet)
 {
   int i;
+  int idx;
+  bool can_slide = false;
 
   /* if received ACK is not corrupted */
   if (!IsCorrupted(packet)) {
@@ -119,15 +121,27 @@ void A_input(struct pkt packet)
       if (((seqfirst <= seqlast) && (packet.acknum >= seqfirst && packet.acknum <= seqlast)) ||
           ((seqfirst > seqlast) && (packet.acknum >= seqfirst || packet.acknum <= seqlast))) {
         
-        /* mark as ACKed */
-        acked[packet.acknum] = true;
+        /* find the packet in the window */
+        for (i = 0; i < windowcount; i++) {
+          idx = (windowfirst + i) % WINDOWSIZE;
+          if (buffer[idx].seqnum == packet.acknum && !acked[packet.acknum]) {
+            /* mark as ACKed */
+            acked[packet.acknum] = true;
+            
+            if (TRACE > 0)
+              printf("----A: ACK %d is not a duplicate\n", packet.acknum);
+            new_ACKs++;
+            
+            /* check if we can slide window */
+            if (idx == windowfirst) {
+              can_slide = true;
+            }
+            break;
+          }
+        }
         
-        if (TRACE > 0)
-          printf("----A: ACK %d is not a duplicate\n", packet.acknum);
-        new_ACKs++;
-        
-        /* check if we can slide window */
-        if (packet.acknum == buffer[windowfirst].seqnum) {
+        /* if we can slide window */
+        if (can_slide) {
           /* slide window until we find an unACKed packet */
           while (windowcount > 0 && acked[buffer[windowfirst].seqnum]) {
             windowfirst = (windowfirst + 1) % WINDOWSIZE;
@@ -155,19 +169,25 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
   int i;
+  int idx;
   
   if (TRACE > 0)
     printf("----A: time out, resend unACKed packets!\n");
 
-  /* In SR, we only resend the first unACKed packet */
-  if (windowcount > 0) {
-    if (TRACE > 0)
-      printf ("---A: resending packet %d\n", buffer[windowfirst].seqnum);
-    
-    tolayer3(A, buffer[windowfirst]);
-    packets_resent++;
-    starttimer(A, RTT);
+  /* In SR, we only resend unACKed packets */
+  for (i = 0; i < windowcount; i++) {
+    idx = (windowfirst + i) % WINDOWSIZE;
+    if (!acked[buffer[idx].seqnum]) {
+      if (TRACE > 0)
+        printf ("---A: resending packet %d\n", buffer[idx].seqnum);
+      
+      tolayer3(A, buffer[idx]);
+      packets_resent++;
+    }
   }
+  
+  /* restart timer */
+  starttimer(A, RTT);
 }
 
 /* initialization function */
