@@ -53,7 +53,6 @@ static int windowfirst, windowlast;    /* array indexes of the first/last packet
 static int windowcount;                /* the number of packets currently awaiting an ACK */
 static int A_nextseqnum;               /* the next sequence number to be used by the sender */
 static bool acked[SEQSPACE];           /* array to track if a packet has been ACKed */
-static int packet_timer[WINDOWSIZE];   /* array to track timer for each packet */
 
 /* called from layer 5 (application layer), passed the message to be sent to other side */
 void A_output(struct msg message)
@@ -211,13 +210,16 @@ void A_init(void)
 
 static int expectedseqnum; /* the sequence number expected next by the receiver */
 static int B_nextseqnum;   /* the sequence number for the next packets sent by B */
-static struct pkt rcvbuffer[WINDOWSIZE]; /* buffer for out-of-order packets */
 static bool received[SEQSPACE]; /* array to track received packets */
 static int rcv_base; /* base of the receive window */
 
 /* called from layer 3, when a packet arrives for layer 4 at B */
 void B_input(struct pkt packet)
 {
+  struct pkt ackpkt;
+  struct pkt nakpkt;
+  int i;
+  
   /* if packet is not corrupted and within receiving window */
   if (!IsCorrupted(packet)) {
     if (TRACE > 0)
@@ -226,11 +228,9 @@ void B_input(struct pkt packet)
     packets_received++;
     
     /* create and send ACK packet */
-    struct pkt ackpkt;
     ackpkt.seqnum = NOTINUSE;
     ackpkt.acknum = packet.seqnum;
     ackpkt.checksum = 0;
-    int i;
     for (i = 0; i < 20; i++)
       ackpkt.payload[i] = 0;
     ackpkt.checksum = ComputeChecksum(ackpkt);
@@ -241,7 +241,7 @@ void B_input(struct pkt packet)
     /* deliver data to layer 5 */
     if (packet.seqnum == B_nextseqnum) {
       tolayer5(B, packet.payload);
-      messages_delivered++;
+      packets_received++; /* 使用正确的计数器 */
       B_nextseqnum = (B_nextseqnum + 1) % SEQSPACE;
     }
   }
@@ -250,11 +250,9 @@ void B_input(struct pkt packet)
       printf("----B: packet is corrupted, send NAK!\n");
     
     /* create and send NAK packet */
-    struct pkt nakpkt;
     nakpkt.seqnum = NOTINUSE;
     nakpkt.acknum = B_nextseqnum ? B_nextseqnum - 1 : SEQSPACE - 1;
     nakpkt.checksum = 0;
-    int i;
     for (i = 0; i < 20; i++)
       nakpkt.payload[i] = 0;
     nakpkt.checksum = ComputeChecksum(nakpkt);
