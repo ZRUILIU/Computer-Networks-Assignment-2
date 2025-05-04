@@ -168,12 +168,11 @@ void A_input(struct pkt packet)
 /* called when A's timer goes off */
 void A_timerinterrupt(void)
 {
-  int i;
-  
   if (TRACE > 0)
     printf("----A: time out,resend packets!\n");
 
-  /* 只重传窗口中的第一个未确认数据包 */
+  /* 重传窗口中的第一个未确认数据包 */
+  int i;
   for (i = 0; i < windowcount; i++) {
     int idx = (windowfirst + i) % WINDOWSIZE;
     if (!acked[buffer[idx].seqnum]) {
@@ -186,7 +185,7 @@ void A_timerinterrupt(void)
     }
   }
   
-  /* restart timer */
+  /* 重启计时器 */
   if (windowcount > 0) {
     starttimer(A, RTT);
   }
@@ -216,7 +215,6 @@ static int B_nextseqnum;   /* the sequence number for the next packets sent by B
 void B_input(struct pkt packet)
 {
   struct pkt ackpkt;
-  struct pkt nakpkt;
   int i;
   
   /* if packet is not corrupted */
@@ -248,22 +246,22 @@ void B_input(struct pkt packet)
       printf("----B: packet is corrupted, send NAK!\n");
     
     /* create and send NAK packet */
-    nakpkt.seqnum = NOTINUSE;
-    nakpkt.acknum = B_nextseqnum ? B_nextseqnum - 1 : SEQSPACE - 1;
-    nakpkt.checksum = 0;
+    ackpkt.seqnum = NOTINUSE;
+    ackpkt.acknum = B_nextseqnum ? B_nextseqnum - 1 : SEQSPACE - 1;
+    ackpkt.checksum = 0;
     for (i = 0; i < 20; i++)
-      nakpkt.payload[i] = 0;
-    nakpkt.checksum = ComputeChecksum(nakpkt);
+      ackpkt.payload[i] = 0;
+    ackpkt.checksum = ComputeChecksum(ackpkt);
     
     /* send NAK */
-    tolayer3(B, nakpkt);
+    tolayer3(B, ackpkt);
   }
 }
 
 /* initialization function */
 void B_init(void)
 {
-  B_nextseqnum = 0; /* 从0开始接收 */
+  B_nextseqnum = 0;
 }
 
 /* functions for bidirectional communication */
