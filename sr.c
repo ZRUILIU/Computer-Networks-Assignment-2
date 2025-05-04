@@ -186,7 +186,9 @@ void A_timerinterrupt(void)
   }
   
   /* restart timer */
-  starttimer(A, RTT);
+  if (windowcount > 0) {
+    starttimer(A, RTT);
+  }
 }
 
 /* initialization function */
@@ -200,10 +202,9 @@ void A_init(void)
   windowlast = -1;   /* windowlast is where the last packet sent is stored */
   windowcount = 0;
   
-  /* initialize ACKed array */
-  for (i = 0; i < SEQSPACE; i++) {
+  /* initialize acked array */
+  for (i = 0; i < SEQSPACE; i++)
     acked[i] = false;
-  }
 }
 
 /********* Receiver (B) variables and procedures ************/
@@ -217,80 +218,50 @@ static int rcv_base; /* base of the receive window */
 /* called from layer 3, when a packet arrives for layer 4 at B */
 void B_input(struct pkt packet)
 {
-  struct pkt sendpkt;
-  int i;
-  bool in_window = false;
-  int rcv_end;
-  int buf_idx;
-
-  /* if not corrupted */
+  /* if packet is not corrupted and within receiving window */
   if (!IsCorrupted(packet)) {
-    /* check if packet is within receive window */
-    rcv_end = (rcv_base + WINDOWSIZE - 1) % SEQSPACE;
+    if (TRACE > 0)
+      printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
     
-    if ((rcv_base <= rcv_end && packet.seqnum >= rcv_base && packet.seqnum <= rcv_end) ||
-        (rcv_base > rcv_end && (packet.seqnum >= rcv_base || packet.seqnum <= rcv_end))) {
-      in_window = true;
-    }
+    packets_received++;
     
-    if (in_window) {
-      if (TRACE > 0)
-        printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
-      
-      /* mark as received */
-      received[packet.seqnum] = true;
-      
-      /* store packet in buffer */
-      buf_idx = (packet.seqnum - rcv_base + SEQSPACE) % SEQSPACE;
-      rcvbuffer[buf_idx] = packet;
-      
-      /* if it's the expected packet, deliver it and any consecutive packets */
-      if (packet.seqnum == rcv_base) {
-        do {
-          /* deliver to receiving application */
-          tolayer5(B, rcvbuffer[buf_idx].payload);
-          packets_received++;
-          
-          /* update base */
-          rcv_base = (rcv_base + 1) % SEQSPACE;
-          buf_idx = 0;
-          
-        } while (received[rcv_base]);
-      }
-      
-      /* send ACK for the received packet */
-      sendpkt.acknum = packet.seqnum;
-    }
-    else {
-      /* packet outside window, send ACK anyway */
-      if (TRACE > 0)
-        printf("----B: packet %d outside receive window, send ACK!\n", packet.seqnum);
-      sendpkt.acknum = packet.seqnum;
+    /* create and send ACK packet */
+    struct pkt ackpkt;
+    ackpkt.seqnum = NOTINUSE;
+    ackpkt.acknum = packet.seqnum;
+    ackpkt.checksum = 0;
+    int i;
+    for (i = 0; i < 20; i++)
+      ackpkt.payload[i] = 0;
+    ackpkt.checksum = ComputeChecksum(ackpkt);
+    
+    /* send ACK */
+    tolayer3(B, ackpkt);
+    
+    /* deliver data to layer 5 */
+    if (packet.seqnum == B_nextseqnum) {
+      tolayer5(B, packet.payload);
+      messages_delivered++;
+      B_nextseqnum = (B_nextseqnum + 1) % SEQSPACE;
     }
   }
   else {
-    /* packet is corrupted, send NAK */
     if (TRACE > 0)
-      printf("----B: packet corrupted, send NAK!\n");
-    if (rcv_base == 0)
-      sendpkt.acknum = SEQSPACE - 1;
-    else
-      sendpkt.acknum = rcv_base - 1;
+      printf("----B: packet is corrupted, send NAK!\n");
+    
+    /* create and send NAK packet */
+    struct pkt nakpkt;
+    nakpkt.seqnum = NOTINUSE;
+    nakpkt.acknum = B_nextseqnum ? B_nextseqnum - 1 : SEQSPACE - 1;
+    nakpkt.checksum = 0;
+    int i;
+    for (i = 0; i < 20; i++)
+      nakpkt.payload[i] = 0;
+    nakpkt.checksum = ComputeChecksum(nakpkt);
+    
+    /* send NAK */
+    tolayer3(B, nakpkt);
   }
-
-  /* create packet */
-  sendpkt.seqnum = B_nextseqnum;
-  B_nextseqnum = (B_nextseqnum + 1) % 2;
-
-  /* fill payload with 0's */
-  for (i = 0; i < 20; i++)
-    sendpkt.payload[i] = '0';
-
-  /* compute checksum */
-  sendpkt.checksum = ComputeChecksum(sendpkt);
-
-  /* send out packet */
-  tolayer3(B, sendpkt);
 }
 
 /* initialization function */
