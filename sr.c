@@ -169,20 +169,20 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
   int i;
-  int idx;
   
   if (TRACE > 0)
-    printf("----A: time out, resend unACKed packets!\n");
+    printf("----A: time out,resend packets!\n");
 
-  /* In SR, we only resend unACKed packets */
+  /* 只重传窗口中的第一个未确认数据包 */
   for (i = 0; i < windowcount; i++) {
-    idx = (windowfirst + i) % WINDOWSIZE;
+    int idx = (windowfirst + i) % WINDOWSIZE;
     if (!acked[buffer[idx].seqnum]) {
       if (TRACE > 0)
         printf ("---A: resending packet %d\n", buffer[idx].seqnum);
       
       tolayer3(A, buffer[idx]);
       packets_resent++;
+      break; /* 只重传一个数据包后退出 */
     }
   }
   
@@ -210,11 +210,7 @@ void A_init(void)
 
 /********* Receiver (B) variables and procedures ************/
 
-static int expectedseqnum; /* the sequence number expected next by the receiver */
 static int B_nextseqnum;   /* the sequence number for the next packets sent by B */
-static struct pkt rcvbuffer[WINDOWSIZE]; /* buffer for out-of-order packets */
-static bool received[SEQSPACE]; /* array to track received packets */
-static int rcv_base; /* base of the receive window */
 
 /* called from layer 3, when a packet arrives for layer 4 at B */
 void B_input(struct pkt packet)
@@ -222,65 +218,29 @@ void B_input(struct pkt packet)
   struct pkt ackpkt;
   struct pkt nakpkt;
   int i;
-  int rcv_end;
-  bool in_window;
   
   /* if packet is not corrupted */
   if (!IsCorrupted(packet)) {
-    /* check if packet is within receive window */
-    rcv_end = (rcv_base + WINDOWSIZE - 1) % SEQSPACE;
-    in_window = false;
+    if (TRACE > 0)
+      printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
     
-    if ((rcv_base <= rcv_end && packet.seqnum >= rcv_base && packet.seqnum <= rcv_end) ||
-        (rcv_base > rcv_end && (packet.seqnum >= rcv_base || packet.seqnum <= rcv_end))) {
-      in_window = true;
-    }
+    packets_received++;
     
-    if (in_window) {
-      if (TRACE > 0)
-        printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
-      
-      packets_received++;
-      received[packet.seqnum] = true;
-      
-      /* store packet in buffer */
-      rcvbuffer[(packet.seqnum - rcv_base + SEQSPACE) % SEQSPACE] = packet;
-      
-      /* create and send ACK packet */
-      ackpkt.seqnum = NOTINUSE;
-      ackpkt.acknum = packet.seqnum;
-      ackpkt.checksum = 0;
-      for (i = 0; i < 20; i++)
-        ackpkt.payload[i] = 0;
-      ackpkt.checksum = ComputeChecksum(ackpkt);
-      
-      /* send ACK */
-      tolayer3(B, ackpkt);
-      
-      /* deliver in-order packets to layer 5 */
-      while (received[rcv_base]) {
-        /* deliver to layer 5 */
-        tolayer5(B, rcvbuffer[(rcv_base - rcv_base + SEQSPACE) % SEQSPACE].payload);
-        
-        /* advance receive window */
-        received[rcv_base] = false;
-        rcv_base = (rcv_base + 1) % SEQSPACE;
-      }
-    }
-    else {
-      /* packet outside window, send ACK anyway */
-      if (TRACE > 0)
-        printf("----B: packet %d outside receive window, send ACK!\n", packet.seqnum);
-      
-      ackpkt.seqnum = NOTINUSE;
-      ackpkt.acknum = packet.seqnum;
-      ackpkt.checksum = 0;
-      for (i = 0; i < 20; i++)
-        ackpkt.payload[i] = 0;
-      ackpkt.checksum = ComputeChecksum(ackpkt);
-      
-      /* send ACK */
-      tolayer3(B, ackpkt);
+    /* create and send ACK packet */
+    ackpkt.seqnum = NOTINUSE;
+    ackpkt.acknum = packet.seqnum;
+    ackpkt.checksum = 0;
+    for (i = 0; i < 20; i++)
+      ackpkt.payload[i] = 0;
+    ackpkt.checksum = ComputeChecksum(ackpkt);
+    
+    /* send ACK */
+    tolayer3(B, ackpkt);
+    
+    /* deliver data to layer 5 if it's the expected packet */
+    if (packet.seqnum == B_nextseqnum) {
+      tolayer5(B, packet.payload);
+      B_nextseqnum = (B_nextseqnum + 1) % SEQSPACE;
     }
   }
   else {
@@ -289,7 +249,7 @@ void B_input(struct pkt packet)
     
     /* create and send NAK packet */
     nakpkt.seqnum = NOTINUSE;
-    nakpkt.acknum = rcv_base ? rcv_base - 1 : SEQSPACE - 1;
+    nakpkt.acknum = B_nextseqnum ? B_nextseqnum - 1 : SEQSPACE - 1;
     nakpkt.checksum = 0;
     for (i = 0; i < 20; i++)
       nakpkt.payload[i] = 0;
@@ -303,16 +263,7 @@ void B_input(struct pkt packet)
 /* initialization function */
 void B_init(void)
 {
-  int i;
-  
-  expectedseqnum = 0;
-  B_nextseqnum = 1;
-  rcv_base = 0;
-  
-  /* initialize received array */
-  for (i = 0; i < SEQSPACE; i++) {
-    received[i] = false;
-  }
+  B_nextseqnum = 0; /* 从0开始接收 */
 }
 
 /* functions for bidirectional communication */
