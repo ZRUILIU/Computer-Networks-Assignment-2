@@ -53,6 +53,7 @@ static int windowfirst, windowlast;    /* array indexes of the first/last packet
 static int windowcount;                /* the number of packets currently awaiting an ACK */
 static int A_nextseqnum;               /* the next sequence number to be used by the sender */
 static bool acked[SEQSPACE];           /* array to track if a packet has been ACKed */
+static int packet_timer[WINDOWSIZE];   /* array to track timer for each packet */
 
 /* called from layer 5 (application layer), passed the message to be sent to other side */
 void A_output(struct msg message)
@@ -103,7 +104,6 @@ void A_output(struct msg message)
 void A_input(struct pkt packet)
 {
   int i;
-  int idx;
   bool can_slide = false;
 
   /* if received ACK is not corrupted */
@@ -123,7 +123,7 @@ void A_input(struct pkt packet)
         
         /* find the packet in the window */
         for (i = 0; i < windowcount; i++) {
-          idx = (windowfirst + i) % WINDOWSIZE;
+          int idx = (windowfirst + i) % WINDOWSIZE;
           if (buffer[idx].seqnum == packet.acknum && !acked[packet.acknum]) {
             /* mark as ACKed */
             acked[packet.acknum] = true;
@@ -169,14 +169,13 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
   int i;
-  int idx;
   
   if (TRACE > 0)
     printf("----A: time out, resend unACKed packets!\n");
 
   /* In SR, we only resend unACKed packets */
   for (i = 0; i < windowcount; i++) {
-    idx = (windowfirst + i) % WINDOWSIZE;
+    int idx = (windowfirst + i) % WINDOWSIZE;
     if (!acked[buffer[idx].seqnum]) {
       if (TRACE > 0)
         printf ("---A: resending packet %d\n", buffer[idx].seqnum);
@@ -220,33 +219,63 @@ void B_input(struct pkt packet)
 {
   struct pkt sendpkt;
   int i;
+  bool in_window = false;
+  int rcv_end;
+  int buf_idx;
 
   /* if not corrupted */
   if (!IsCorrupted(packet)) {
-    if (TRACE > 0)
-      printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
-    
     /* check if packet is within receive window */
-    if (packet.seqnum == expectedseqnum) {
-      /* deliver to receiving application */
-      tolayer5(B, packet.payload);
-      packets_received++;
-      
-      /* update expected sequence number */
-      expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
+    rcv_end = (rcv_base + WINDOWSIZE - 1) % SEQSPACE;
+    
+    if ((rcv_base <= rcv_end && packet.seqnum >= rcv_base && packet.seqnum <= rcv_end) ||
+        (rcv_base > rcv_end && (packet.seqnum >= rcv_base || packet.seqnum <= rcv_end))) {
+      in_window = true;
     }
     
-    /* send ACK for the received packet */
-    sendpkt.acknum = packet.seqnum;
+    if (in_window) {
+      if (TRACE > 0)
+        printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
+      
+      /* mark as received */
+      received[packet.seqnum] = true;
+      
+      /* store packet in buffer */
+      buf_idx = (packet.seqnum - rcv_base + SEQSPACE) % SEQSPACE;
+      rcvbuffer[buf_idx] = packet;
+      
+      /* if it's the expected packet, deliver it and any consecutive packets */
+      if (packet.seqnum == rcv_base) {
+        do {
+          /* deliver to receiving application */
+          tolayer5(B, rcvbuffer[buf_idx].payload);
+          packets_received++;
+          
+          /* update base */
+          rcv_base = (rcv_base + 1) % SEQSPACE;
+          buf_idx = 0;
+          
+        } while (received[rcv_base]);
+      }
+      
+      /* send ACK for the received packet */
+      sendpkt.acknum = packet.seqnum;
+    }
+    else {
+      /* packet outside window, send ACK anyway */
+      if (TRACE > 0)
+        printf("----B: packet %d outside receive window, send ACK!\n", packet.seqnum);
+      sendpkt.acknum = packet.seqnum;
+    }
   }
   else {
     /* packet is corrupted, send NAK */
     if (TRACE > 0)
       printf("----B: packet corrupted, send NAK!\n");
-    if (expectedseqnum == 0)
+    if (rcv_base == 0)
       sendpkt.acknum = SEQSPACE - 1;
     else
-      sendpkt.acknum = expectedseqnum - 1;
+      sendpkt.acknum = rcv_base - 1;
   }
 
   /* create packet */
